@@ -37,6 +37,13 @@ void main() {
     expect(allocations[0]['amount'], 100000);
     expect(allocations[1]['amount'], 20000);
 
+    final debtBalances = await repository.getDebtBalances(customerId);
+
+    expect(debtBalances.map((debt) => debt.localOutstanding).toList(), [
+      0,
+      30000,
+    ]);
+
     await expectLater(
       repository.recordPayment(
         customerId: customerId,

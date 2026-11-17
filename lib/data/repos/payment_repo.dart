@@ -1,4 +1,5 @@
 import 'package:debts_payment_app/data/local/app_database.dart';
+import 'package:debts_payment_app/data/local/models/debt_balance.dart';
 import 'package:debts_payment_app/data/local/models/debt_record.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
@@ -132,5 +133,43 @@ class PaymentRepo {
 
   Future<void> cacheDebts(String customerId, List<Map<String, Object?>> debts) {
     return _database.replaceDebts(customerId, debts);
+  }
+
+  Future<List<DebtBalance>> getDebtBalances(String customerId) async {
+    final db = await _database.database;
+
+    final rows = await db.rawQuery(
+      '''
+    SELECT
+      d.id AS debt_id,
+      d.server_outstanding AS server_outstanding,
+      d.created_at AS created_at,
+      d.server_outstanding - COALESCE(
+        SUM(
+          CASE WHEN p.id IS NOT NULL THEN pa.amount ELSE 0 END
+        ),
+        0
+      ) AS local_outstanding
+    FROM debts d
+    LEFT JOIN payment_allocations pa
+      ON pa.debt_id = d.id
+    LEFT JOIN payments p
+      ON p.id = pa.payment_id
+      AND p.status IN ('local', 'confirmed', 'conflict')
+    WHERE d.customer_id = ?
+    GROUP BY d.id, d.server_outstanding, d.created_at
+    ORDER BY d.created_at ASC, d.id ASC
+    ''',
+      [customerId],
+    );
+
+    return rows.map((row) {
+      return DebtBalance(
+        debtId: row['debt_id'] as String,
+        serverOutstanding: row['server_outstanding'] as int,
+        localOutstanding: row['local_outstanding'] as int,
+        createdAt: DateTime.parse(row['created_at'] as String),
+      );
+    }).toList();
   }
 }
