@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:debts_payment_app/data/local/models/sync_operation.dart';
+import 'package:debts_payment_app/data/mock/mock_network.dart';
 import 'package:debts_payment_app/data/repos/payment_repo.dart';
+import 'package:debts_payment_app/data/services/sync_on_reconnect.dart';
 import 'package:debts_payment_app/data/services/sync_worker.dart';
 import 'package:debts_payment_app/features/customer/presentation/widgets/sync_operation_card.dart';
 import 'package:flutter/material.dart';
@@ -9,10 +13,14 @@ class PendingOperationsScreen extends StatefulWidget {
     super.key,
     required this.repository,
     required this.syncWorker,
+    required this.network,
+    required this.syncOnReconnect,
   });
 
   final PaymentRepo repository;
   final SyncWorker syncWorker;
+  final MockNetwork network;
+  final SyncOnReconnect syncOnReconnect;
 
   @override
   State<PendingOperationsScreen> createState() =>
@@ -25,10 +33,23 @@ class _PendingOperationsScreenState extends State<PendingOperationsScreen> {
   String? _error;
   List<SyncOperation> _operations = [];
 
+  late final StreamSubscription<void> _syncSubscription;
+
   @override
   void initState() {
     super.initState();
+
+    _syncSubscription = widget.syncOnReconnect.syncCompleted.listen((_) {
+      _loadOperations(showLoading: false);
+    });
+
     _loadOperations();
+  }
+
+  @override
+  void dispose() {
+    _syncSubscription.cancel();
+    super.dispose();
   }
 
   Future<void> _loadOperations({bool showLoading = true}) async {
@@ -86,12 +107,23 @@ class _PendingOperationsScreenState extends State<PendingOperationsScreen> {
       backgroundColor: Color(0XFF52796F),
       appBar: AppBar(
         backgroundColor: Color(0XFF52796F),
-        title: const Text('عمليات التحصيل'),
+        foregroundColor: Colors.white,
+        title: const Text('عمليات التحصيل',),
         actions: [
           IconButton(
             onPressed: _isSyncing ? null : _syncNow,
             tooltip: 'زامن الآن',
             icon: const Icon(Icons.sync),
+          ),
+          IconButton(
+            tooltip: widget.network.isOnline
+                ? 'اقطع الاتصال التجريبي'
+                : 'أعد الاتصال التجريبي',
+            onPressed: () {
+              widget.network.setOnline(!widget.network.isOnline);
+              setState(() {});
+            },
+            icon: Icon(widget.network.isOnline ? Icons.wifi : Icons.wifi_off),
           ),
         ],
       ),

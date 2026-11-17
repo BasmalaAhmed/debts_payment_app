@@ -1,3 +1,5 @@
+import 'package:debts_payment_app/data/mock/mock_network.dart';
+import 'package:debts_payment_app/data/services/sync_on_reconnect.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -305,6 +307,77 @@ void main() {
     expect(payments, isEmpty);
     expect(allocations, isEmpty);
     expect(queueCountAfter.single['total'], previousQueueCount);
+  });
+
+  testWidgets('mock API fails offline and works after reconnect', (_) async {
+    final network = MockNetwork(initiallyOnline: false);
+    final api = MockDebtApi(network: network);
+    const customerId = 'network-test-customer';
+
+    await expectLater(
+      api.fetchDebts(customerId),
+      throwsA(isA<MockNetworkUnavailable>()),
+    );
+
+    network.setOnline(true);
+
+    final debts = await api.fetchDebts(customerId);
+    expect(debts, hasLength(2));
+
+    await api.close();
+    await network.dispose();
+  });
+
+  testWidgets('pending payment syncs automatically after reconnect', (_) async {
+    final customerId = _newCustomerId();
+    const deviceId = 'emulator-device';
+
+    final network = MockNetwork();
+    final api = MockDebtApi(network: network);
+    final database = AppDatabase.instance;
+    final repository = PaymentRepo(database: database);
+
+    await _seedLocalDebts(api, repository, customerId);
+
+    final paymentId = await repository.recordPayment(
+      customerId: customerId,
+      amount: 20000,
+      deviceId: deviceId,
+    );
+
+    final worker = SyncWorker(database: database, api: api);
+
+    network.setOnline(false);
+    await worker.syncPendingPayments();
+
+    final db = await database.database;
+    var payment = await db.query(
+      'payments',
+      where: 'id = ?',
+      whereArgs: [paymentId],
+      limit: 1,
+    );
+    expect(payment.single['status'], 'local');
+
+    final reconnectSync = SyncOnReconnect(network: network, syncWorker: worker);
+    final syncFinished = reconnectSync.syncCompleted.first;
+
+    network.setOnline(true);
+    await syncFinished.timeout(const Duration(seconds: 5));
+
+    payment = await db.query(
+      'payments',
+      where: 'id = ?',
+      whereArgs: [paymentId],
+      limit: 1,
+    );
+
+    expect(payment.single['status'], 'confirmed');
+    expect(await _serverBalance(api, customerId), 130000);
+
+    await reconnectSync.dispose();
+    await api.close();
+    await network.dispose();
   });
 }
 

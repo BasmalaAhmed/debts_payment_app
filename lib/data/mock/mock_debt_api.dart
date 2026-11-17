@@ -1,9 +1,13 @@
+import 'package:debts_payment_app/data/mock/mock_network.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
 class MockDebtApi {
+  final MockNetwork _network;
   Database? _serverDatabase;
   final Set<String> _operationsWithLostResponses = {};
+
+  MockDebtApi({MockNetwork? network}) : _network = network ?? MockNetwork();
 
   Future<Database> get _database async {
     final existingDatabase = _serverDatabase;
@@ -49,6 +53,7 @@ class MockDebtApi {
   }
 
   Future<List<Map<String, Object?>>> fetchDebts(String customerId) async {
+    await _beforeRequest();
     final db = await _database;
 
     return db.transaction((txn) async {
@@ -83,6 +88,8 @@ class MockDebtApi {
     if (amount <= 0) {
       throw ArgumentError.value(amount, 'amount', 'Must be greater than zero');
     }
+
+    await _beforeRequest();
 
     final db = await _database;
 
@@ -260,6 +267,14 @@ class MockDebtApi {
 
     await database.close();
     _serverDatabase = null;
+  }
+
+  Future<void> _beforeRequest() async {
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+
+    if (!_network.isOnline) {
+      throw const MockNetworkUnavailable();
+    }
   }
 }
 
