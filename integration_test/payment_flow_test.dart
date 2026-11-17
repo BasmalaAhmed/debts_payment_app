@@ -154,6 +154,20 @@ void main() {
     expect(queueRows.single['last_error'], contains('100000'));
     expect(await _serverBalance(api, customerId), 100000);
   });
+
+  testWidgets('device ID remains stable after database reopen', (_) async {
+    final database = AppDatabase.instance;
+    final repository = PaymentRepo(database: database);
+
+    final firstDeviceId = await repository.getOrCreateDeviceId();
+
+    await database.close();
+
+    final reopenedDeviceId = await repository.getOrCreateDeviceId();
+
+    expect(firstDeviceId, isNotEmpty);
+    expect(reopenedDeviceId, firstDeviceId);
+  });
 }
 
 String _newCustomerId() {

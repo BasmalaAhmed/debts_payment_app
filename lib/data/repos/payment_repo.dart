@@ -172,4 +172,30 @@ class PaymentRepo {
       );
     }).toList();
   }
+
+  Future<String> getOrCreateDeviceId() async {
+  final db = await _database.database;
+
+  return db.transaction((txn) async {
+    final rows = await txn.query(
+      'app_metadata',
+      where: 'key = ?',
+      whereArgs: ['device_id'],
+      limit: 1,
+    );
+
+    if (rows.isNotEmpty) {
+      return rows.single['value'] as String;
+    }
+
+    final deviceId = _uuid.v4();
+
+    await txn.insert('app_metadata', {
+      'key': 'device_id',
+      'value': deviceId,
+    });
+
+    return deviceId;
+  });
+}
 }
