@@ -99,7 +99,7 @@ class PaymentRepo {
       FROM payment_allocations pa
       JOIN payments p ON p.id = pa.payment_id
       WHERE pa.debt_id = ?
-        AND p.status IN ('local', 'confirmed')
+        AND p.status IN ('local', 'confirmed', 'conflict')
       ''',
       [debtId],
     );

@@ -1,39 +1,23 @@
-import 'package:debts_payment_app/data/repos/payment_repo.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'package:debts_payment_app/data/local/app_database.dart';
+import 'package:debts_payment_app/data/mock/mock_debt_api.dart';
+import 'package:debts_payment_app/data/repos/payment_repo.dart';
+import 'package:debts_payment_app/data/services/sync_worker.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('payment allocation persists and overpayment is rejected', (
-    tester,
-  ) async {
-    const customerId = 'integration-test-customer';
-    const deviceId = 'integration-test-device';
+  testWidgets('allocates locally and survives database reopen', (_) async {
+    final customerId = _newCustomerId();
+    const deviceId = 'emulator-device';
 
-    final appDatabase = AppDatabase.instance;
-    final db = await appDatabase.database;
+    final database = AppDatabase.instance;
+    final repository = PaymentRepo(database: database);
+    final api = MockDebtApi();
 
-    await appDatabase.replaceDebts(customerId, [
-      {
-        'id': 'integration-debt-001',
-        'customer_id': customerId,
-        'original_amount': 100000,
-        'server_outstanding': 100000,
-        'created_at': '2026-01-01T00:00:00.000Z',
-      },
-      {
-        'id': 'integration-debt-002',
-        'customer_id': customerId,
-        'original_amount': 50000,
-        'server_outstanding': 50000,
-        'created_at': '2026-02-01T00:00:00.000Z',
-      },
-    ]);
-
-    final repository = PaymentRepo(database: appDatabase);
+    await _seedLocalDebts(api, repository, customerId);
 
     final paymentId = await repository.recordPayment(
       customerId: customerId,
@@ -41,6 +25,7 @@ void main() {
       deviceId: deviceId,
     );
 
+    final db = await database.database;
     final allocations = await db.query(
       'payment_allocations',
       where: 'payment_id = ?',
@@ -61,16 +46,8 @@ void main() {
       throwsA(isA<StateError>()),
     );
 
-    final paymentsBeforeReopen = await db.query(
-      'payments',
-      where: 'customer_id = ?',
-      whereArgs: [customerId],
-    );
-    expect(paymentsBeforeReopen, hasLength(1));
-
-    await appDatabase.close();
-    final reopenedDb = await appDatabase.database;
-
+    await database.close();
+    final reopenedDb = await database.database;
     final savedPayment = await reopenedDb.query(
       'payments',
       where: 'id = ?',
@@ -80,4 +57,116 @@ void main() {
     expect(savedPayment, hasLength(1));
     expect(savedPayment.single['status'], 'local');
   });
+
+  testWidgets('lost response can be retried without duplicate collection', (
+    _,
+  ) async {
+    final customerId = _newCustomerId();
+    const deviceId = 'emulator-device';
+
+    final database = AppDatabase.instance;
+    final repository = PaymentRepo(database: database);
+    final api = MockDebtApi();
+
+    await _seedLocalDebts(api, repository, customerId);
+
+    final paymentId = await repository.recordPayment(
+      customerId: customerId,
+      amount: 20000,
+      deviceId: deviceId,
+    );
+
+    final db = await database.database;
+    final queueRows = await db.query(
+      'sync_queue',
+      where: 'payment_id = ?',
+      whereArgs: [paymentId],
+    );
+    final operationId = queueRows.single['operation_id'] as String;
+
+    api.loseNextResponseFor(operationId);
+    final worker = SyncWorker(database: database, api: api);
+
+    await worker.syncPendingPayments();
+
+    var paymentRows = await db.query(
+      'payments',
+      where: 'id = ?',
+      whereArgs: [paymentId],
+    );
+    expect(paymentRows.single['status'], 'local');
+    expect(await _serverBalance(api, customerId), 130000);
+
+    await worker.syncPendingPayments();
+
+    paymentRows = await db.query(
+      'payments',
+      where: 'id = ?',
+      whereArgs: [paymentId],
+    );
+    expect(paymentRows.single['status'], 'confirmed');
+    expect(await _serverBalance(api, customerId), 130000);
+  });
+
+  testWidgets('server conflict keeps the local payment for review', (_) async {
+    final customerId = _newCustomerId();
+    const deviceId = 'emulator-device';
+
+    final database = AppDatabase.instance;
+    final repository = PaymentRepo(database: database);
+    final api = MockDebtApi();
+
+    await _seedLocalDebts(api, repository, customerId);
+
+    await api.simulateOtherDevicePayment(customerId: customerId, amount: 50000);
+
+    final paymentId = await repository.recordPayment(
+      customerId: customerId,
+      amount: 120000,
+      deviceId: deviceId,
+    );
+
+    final worker = SyncWorker(database: database, api: api);
+    await worker.syncPendingPayments();
+
+    final db = await database.database;
+    final paymentRows = await db.query(
+      'payments',
+      where: 'id = ?',
+      whereArgs: [paymentId],
+    );
+    final queueRows = await db.query(
+      'sync_queue',
+      where: 'payment_id = ?',
+      whereArgs: [paymentId],
+    );
+
+    expect(paymentRows.single['amount'], 120000);
+    expect(paymentRows.single['status'], 'conflict');
+    expect(queueRows.single['status'], 'conflict');
+    expect(queueRows.single['last_error'], contains('100000'));
+    expect(await _serverBalance(api, customerId), 100000);
+  });
+}
+
+String _newCustomerId() {
+  return 'integration-${DateTime.now().microsecondsSinceEpoch}';
+}
+
+Future<void> _seedLocalDebts(
+  MockDebtApi api,
+  PaymentRepo repo,
+  String customerId,
+) async {
+  final serverDebts = await api.fetchDebts(customerId);
+  await repo.cacheDebts(customerId, serverDebts);
+}
+
+Future<int> _serverBalance(MockDebtApi api, String customerId) async {
+  final debts = await api.fetchDebts(customerId);
+
+  return debts.fold<int>(
+    0,
+    (total, debt) => total + (debt['server_outstanding'] as int),
+  );
 }
