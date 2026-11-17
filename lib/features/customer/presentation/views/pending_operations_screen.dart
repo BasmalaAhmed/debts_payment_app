@@ -34,6 +34,7 @@ class _PendingOperationsScreenState extends State<PendingOperationsScreen> {
   List<SyncOperation> _operations = [];
 
   late final StreamSubscription<void> _syncSubscription;
+  late final StreamSubscription<bool> _networkSubscription;
 
   @override
   void initState() {
@@ -43,12 +44,18 @@ class _PendingOperationsScreenState extends State<PendingOperationsScreen> {
       _loadOperations(showLoading: false);
     });
 
+    _networkSubscription = widget.network.changes.listen((_) {
+      if (!mounted) return;
+      setState(() {});
+    });
+
     _loadOperations();
   }
 
   @override
   void dispose() {
     _syncSubscription.cancel();
+    _networkSubscription.cancel();
     super.dispose();
   }
 
@@ -108,22 +115,22 @@ class _PendingOperationsScreenState extends State<PendingOperationsScreen> {
       appBar: AppBar(
         backgroundColor: Color(0XFF52796F),
         foregroundColor: Colors.white,
-        title: const Text('عمليات التحصيل',),
+        title: const Text('عمليات التحصيل'),
         actions: [
           IconButton(
             onPressed: _isSyncing ? null : _syncNow,
             tooltip: 'زامن الآن',
             icon: const Icon(Icons.sync),
           ),
-          IconButton(
-            tooltip: widget.network.isOnline
-                ? 'اقطع الاتصال التجريبي'
-                : 'أعد الاتصال التجريبي',
-            onPressed: () {
-              widget.network.setOnline(!widget.network.isOnline);
-              setState(() {});
-            },
-            icon: Icon(widget.network.isOnline ? Icons.wifi : Icons.wifi_off),
+          Padding(
+            padding: const EdgeInsetsDirectional.only(end: 12),
+            child: Tooltip(
+              message: widget.network.isOnline ? 'متصل بالشبكة' : 'غير متصل',
+              child: Icon(
+                widget.network.isOnline ? Icons.wifi : Icons.wifi_off,
+                color: Colors.white,
+              ),
+            ),
           ),
         ],
       ),

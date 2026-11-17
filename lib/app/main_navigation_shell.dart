@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:debts_payment_app/data/mock/mock_debt_api.dart';
 import 'package:debts_payment_app/data/mock/mock_network.dart';
 import 'package:debts_payment_app/data/repos/payment_repo.dart';
+import 'package:debts_payment_app/data/services/device_connectivity_observer.dart';
 import 'package:debts_payment_app/data/services/sync_on_reconnect.dart';
 import 'package:debts_payment_app/data/services/sync_worker.dart';
 import 'package:debts_payment_app/features/customer/presentation/views/customer_debt_screen.dart';
@@ -16,12 +17,14 @@ class MainNavigationShell extends StatefulWidget {
     required this.repository,
     required this.syncWorker,
     required this.network,
+    required this.connectivityObserver,
   });
 
   final MockDebtApi api;
   final PaymentRepo repository;
   final SyncWorker syncWorker;
   final MockNetwork network;
+  final DeviceConnectivityObserver connectivityObserver;
 
   @override
   State<MainNavigationShell> createState() => _MainNavigationShellState();
@@ -42,6 +45,7 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
   @override
   void dispose() {
     unawaited(_syncOnReconnect.dispose());
+    unawaited(widget.connectivityObserver.dispose());
     super.dispose();
   }
 
