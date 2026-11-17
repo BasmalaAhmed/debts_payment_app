@@ -17,7 +17,7 @@ class AppDatabase {
 
     final database = await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE debts (
@@ -53,6 +53,7 @@ class AppDatabase {
         await db.execute('''
           CREATE TABLE sync_queue (
             operation_id TEXT PRIMARY KEY,
+            expected_server_version INTEGER,
             device_id TEXT NOT NULL,
             device_sequence INTEGER NOT NULL,
             payment_id TEXT NOT NULL UNIQUE,
@@ -70,6 +71,13 @@ class AppDatabase {
           )
         ''');
       },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute(
+            'ALTER TABLE sync_queue ADD COLUMN expected_server_version INTEGER',
+          );
+        }
+      },
     );
 
     _database = database;
@@ -78,8 +86,9 @@ class AppDatabase {
 
   Future<void> replaceDebts(
     String customerId,
-    List<Map<String, Object?>> debts,
-  ) async {
+    List<Map<String, Object?>> debts, {
+    int? serverVersion,
+  }) async {
     final db = await database;
 
     await db.transaction((txn) async {
@@ -91,6 +100,13 @@ class AppDatabase {
 
       for (final debt in debts) {
         await txn.insert('debts', debt);
+      }
+
+      if (serverVersion != null) {
+        await txn.insert('app_metadata', {
+          'key': 'server_version:$customerId',
+          'value': serverVersion.toString(),
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
       }
     });
   }

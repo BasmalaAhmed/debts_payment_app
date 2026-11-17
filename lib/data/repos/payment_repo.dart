@@ -61,6 +61,34 @@ class PaymentRepo {
         throw StateError('Payment exceeds the locally available balance.');
       }
 
+      final versionRows = await txn.query(
+        'app_metadata',
+        columns: ['value'],
+        where: 'key = ?',
+        whereArgs: ['server_version:$customerId'],
+        limit: 1,
+      );
+
+      final baseServerVersion = versionRows.isEmpty
+          ? null
+          : int.tryParse(versionRows.single['value'] as String);
+
+      final pendingRows = await txn.rawQuery(
+        '''
+  SELECT COUNT(*) AS total
+  FROM sync_queue q
+  JOIN payments p ON p.id = q.payment_id
+  WHERE p.customer_id = ?
+    AND q.status IN ('pending', 'syncing')
+  ''',
+        [customerId],
+      );
+
+      final earlierPendingCount = pendingRows.single['total'] as int;
+      final expectedServerVersion = baseServerVersion == null
+          ? null
+          : baseServerVersion + earlierPendingCount;
+
       final now = DateTime.now().toUtc().toIso8601String();
       final paymentId = _uuid.v4();
       final operationId = _uuid.v4();
@@ -90,6 +118,7 @@ class PaymentRepo {
         'status': 'pending',
         'last_error': null,
         'created_at': now,
+        'expected_server_version': expectedServerVersion,
       });
 
       return paymentId;
@@ -135,7 +164,21 @@ class PaymentRepo {
   }
 
   Future<void> cacheDebts(String customerId, List<Map<String, Object?>> debts) {
-    return _database.replaceDebts(customerId, debts);
+    final serverVersion = debts.isEmpty
+        ? null
+        : debts.first['server_version'] as int?;
+
+    final localDebts = debts.map((debt) {
+      final localDebt = Map<String, Object?>.from(debt);
+      localDebt.remove('server_version');
+      return localDebt;
+    }).toList();
+
+    return _database.replaceDebts(
+      customerId,
+      localDebts,
+      serverVersion: serverVersion,
+    );
   }
 
   Future<List<DebtBalance>> getDebtBalances(String customerId) async {

@@ -1,11 +1,9 @@
 import 'package:debts_payment_app/data/local/app_database.dart';
 import 'package:debts_payment_app/data/mock/mock_debt_api.dart';
+import 'package:sqflite/sqflite.dart';
 
 class SyncWorker {
-  SyncWorker({
-    required this._database,
-    required this._api,
-  });
+  SyncWorker({required this._database, required this._api});
 
   final AppDatabase _database;
   final MockDebtApi _api;
@@ -21,10 +19,7 @@ class SyncWorker {
 
       await db.update(
         'sync_queue',
-        {
-          'status': 'pending',
-          'last_error': 'Retry after app restart',
-        },
+        {'status': 'pending', 'last_error': 'Retry after app restart'},
         where: 'status = ?',
         whereArgs: ['syncing'],
       );
@@ -37,14 +32,15 @@ class SyncWorker {
       );
 
       for (final operation in operations) {
-        await _syncOne(operation);
+        final canContinue = await _syncOne(operation);
+        if (!canContinue) break;
       }
     } finally {
       _isSyncing = false;
     }
   }
 
-  Future<void> _syncOne(Map<String, Object?> operation) async {
+  Future<bool> _syncOne(Map<String, Object?> operation) async {
     final db = await _database.database;
     final operationId = operation['operation_id'] as String;
     final paymentId = operation['payment_id'] as String;
@@ -70,17 +66,18 @@ class SyncWorker {
           paymentId: paymentId,
           reason: 'Payment record is missing locally.',
         );
-        return;
+        return false;
       }
 
       final payment = payments.single;
 
-      await _api.submitPayment(
+      final result = await _api.submitPayment(
         operationId: operationId,
         customerId: payment['customer_id'] as String,
         deviceId: operation['device_id'] as String,
         deviceSequence: operation['device_sequence'] as int,
         amount: payment['amount'] as int,
+        expectedServerVersion: operation['expected_server_version'] as int?,
       );
 
       await db.transaction((txn) async {
@@ -97,23 +94,31 @@ class SyncWorker {
           where: 'id = ?',
           whereArgs: [paymentId],
         );
+        await txn.insert('app_metadata', {
+          'key': 'server_version:${payment['customer_id']}',
+          'value': result.serverVersion.toString(),
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
       });
+      return true;
     } on MockResponseLost {
       await db.update(
         'sync_queue',
         {
           'status': 'pending',
-          'last_error': 'Response lost; safe to retry with the same operation ID.',
+          'last_error':
+              'Response lost; safe to retry with the same operation ID.',
         },
         where: 'operation_id = ?',
         whereArgs: [operationId],
       );
+      return false;
     } on MockPaymentConflict catch (error) {
       await _markConflict(
         operationId: operationId,
         paymentId: paymentId,
         reason: error.toString(),
       );
+      return false;
     } catch (error) {
       await db.update(
         'sync_queue',
@@ -121,6 +126,7 @@ class SyncWorker {
         where: 'operation_id = ?',
         whereArgs: [operationId],
       );
+      return false;
     }
   }
 

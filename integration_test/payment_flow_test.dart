@@ -153,6 +153,8 @@ void main() {
     expect(paymentRows.single['amount'], 120000);
     expect(paymentRows.single['status'], 'conflict');
     expect(queueRows.single['status'], 'conflict');
+    expect(queueRows.single['expected_server_version'], 1);
+    expect(queueRows.single['last_error'], contains('Server version changed'));
     expect(queueRows.single['last_error'], contains('100000'));
     expect(await _serverBalance(api, customerId), 100000);
   });

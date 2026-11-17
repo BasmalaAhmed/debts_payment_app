@@ -18,7 +18,7 @@ class MockDebtApi {
 
     final database = await openDatabase(
       databasePath,
-      version: 1,
+      version: 2,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE server_debts (
@@ -41,6 +41,29 @@ class MockDebtApi {
             created_at TEXT NOT NULL
           )
         ''');
+
+        await db.execute('''
+          CREATE TABLE server_versions (
+            customer_id TEXT PRIMARY KEY,
+            version INTEGER NOT NULL
+          )
+        ''');
+      },
+
+      onUpgrade: (db, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await db.execute('''
+      CREATE TABLE server_versions (
+        customer_id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL
+      )
+    ''');
+
+          await db.execute('''
+      INSERT INTO server_versions (customer_id, version)
+      SELECT DISTINCT customer_id, 1 FROM server_debts
+    ''');
+        }
       },
     );
 
@@ -58,6 +81,7 @@ class MockDebtApi {
 
     return db.transaction((txn) async {
       await _seedCustomerIfNeeded(txn, customerId);
+      final serverVersion = await _serverVersion(txn, customerId);
 
       final rows = await txn.query(
         'server_debts',
@@ -73,6 +97,7 @@ class MockDebtApi {
           'original_amount': row['original_amount'],
           'server_outstanding': row['outstanding'],
           'created_at': row['created_at'],
+          'server_version': serverVersion,
         };
       }).toList();
     });
@@ -84,6 +109,7 @@ class MockDebtApi {
     required String deviceId,
     required int deviceSequence,
     required int amount,
+    int? expectedServerVersion,
   }) async {
     if (amount <= 0) {
       throw ArgumentError.value(amount, 'amount', 'Must be greater than zero');
@@ -109,6 +135,7 @@ class MockDebtApi {
           operationId: operationId,
           serverBalanceAfter: previous['server_balance_after'] as int,
           alreadyProcessed: true,
+          serverVersion: await _serverVersion(txn, customerId),
         );
       }
 
@@ -123,6 +150,18 @@ class MockDebtApi {
         0,
         (total, debt) => total + (debt['outstanding'] as int),
       );
+
+      final actualServerVersion = await _serverVersion(txn, customerId);
+
+      if (expectedServerVersion != null &&
+          expectedServerVersion != actualServerVersion) {
+        throw MockPaymentConflict(
+          requestedAmount: amount,
+          serverBalance: serverBalance,
+          expectedServerVersion: expectedServerVersion,
+          actualServerVersion: actualServerVersion,
+        );
+      }
 
       if (amount > serverBalance) {
         throw MockPaymentConflict(
@@ -153,6 +192,8 @@ class MockDebtApi {
 
       final balanceAfter = serverBalance - amount;
 
+      final serverVersion = await _incrementServerVersion(txn, customerId);
+
       await txn.insert('server_operations', {
         'operation_id': operationId,
         'customer_id': customerId,
@@ -167,6 +208,7 @@ class MockDebtApi {
         operationId: operationId,
         serverBalanceAfter: balanceAfter,
         alreadyProcessed: false,
+        serverVersion: serverVersion,
       );
     });
 
@@ -228,6 +270,7 @@ class MockDebtApi {
 
         remaining -= deducted;
       }
+      await _incrementServerVersion(txn, customerId);
     });
   }
 
@@ -240,25 +283,40 @@ class MockDebtApi {
       limit: 1,
     );
 
-    if (existingDebts.isNotEmpty) return;
+    if (existingDebts.isEmpty) {
+      final now = DateTime.now().toUtc();
 
-    final now = DateTime.now().toUtc();
+      await txn.insert('server_debts', {
+        'id': '$customerId-debt-001',
+        'customer_id': customerId,
+        'original_amount': 100000,
+        'outstanding': 100000,
+        'created_at': now.subtract(const Duration(days: 60)).toIso8601String(),
+      });
 
-    await txn.insert('server_debts', {
-      'id': '$customerId-debt-001',
-      'customer_id': customerId,
-      'original_amount': 100000,
-      'outstanding': 100000,
-      'created_at': now.subtract(const Duration(days: 60)).toIso8601String(),
-    });
+      await txn.insert('server_debts', {
+        'id': '$customerId-debt-002',
+        'customer_id': customerId,
+        'original_amount': 50000,
+        'outstanding': 50000,
+        'created_at': now.subtract(const Duration(days: 30)).toIso8601String(),
+      });
+    }
 
-    await txn.insert('server_debts', {
-      'id': '$customerId-debt-002',
-      'customer_id': customerId,
-      'original_amount': 50000,
-      'outstanding': 50000,
-      'created_at': now.subtract(const Duration(days: 30)).toIso8601String(),
-    });
+    final versions = await txn.query(
+      'server_versions',
+      columns: ['customer_id'],
+      where: 'customer_id = ?',
+      whereArgs: [customerId],
+      limit: 1,
+    );
+
+    if (versions.isEmpty) {
+      await txn.insert('server_versions', {
+        'customer_id': customerId,
+        'version': 1,
+      });
+    }
   }
 
   Future<void> close() async {
@@ -276,6 +334,34 @@ class MockDebtApi {
       throw const MockNetworkUnavailable();
     }
   }
+
+  Future<int> _serverVersion(Transaction txn, String customerId) async {
+    final rows = await txn.query(
+      'server_versions',
+      columns: ['version'],
+      where: 'customer_id = ?',
+      whereArgs: [customerId],
+      limit: 1,
+    );
+
+    return rows.single['version'] as int;
+  }
+
+  Future<int> _incrementServerVersion(
+    Transaction txn,
+    String customerId,
+  ) async {
+    final nextVersion = await _serverVersion(txn, customerId) + 1;
+
+    await txn.update(
+      'server_versions',
+      {'version': nextVersion},
+      where: 'customer_id = ?',
+      whereArgs: [customerId],
+    );
+
+    return nextVersion;
+  }
 }
 
 class MockPaymentResult {
@@ -283,26 +369,39 @@ class MockPaymentResult {
     required this.operationId,
     required this.serverBalanceAfter,
     required this.alreadyProcessed,
+    required this.serverVersion,
   });
 
   final String operationId;
   final int serverBalanceAfter;
   final bool alreadyProcessed;
+  final int serverVersion;
 }
 
 class MockPaymentConflict implements Exception {
   const MockPaymentConflict({
     required this.requestedAmount,
     required this.serverBalance,
+    this.expectedServerVersion,
+    this.actualServerVersion,
   });
 
   final int requestedAmount;
   final int serverBalance;
+  final int? expectedServerVersion;
+  final int? actualServerVersion;
 
   @override
   String toString() {
-    return 'Payment conflict: requested $requestedAmount cents, '
-        'but the server balance is $serverBalance cents.';
+    final versionDetails =
+        expectedServerVersion != null && actualServerVersion != null
+        ? 'Server version changed: expected $expectedServerVersion, '
+              'current $actualServerVersion. '
+        : '';
+
+    return '$versionDetails'
+        'Requested $requestedAmount cents; '
+        'server balance is $serverBalance cents.';
   }
 }
 
