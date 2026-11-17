@@ -168,6 +168,83 @@ void main() {
     expect(firstDeviceId, isNotEmpty);
     expect(reopenedDeviceId, firstDeviceId);
   });
+
+  testWidgets('in-flight payment recovers after database reopen', (_) async {
+    final customerId = _newCustomerId();
+    const deviceId = 'emulator-device';
+
+    final database = AppDatabase.instance;
+    final repository = PaymentRepo(database: database);
+    final api = MockDebtApi();
+
+    await _seedLocalDebts(api, repository, customerId);
+
+    final paymentId = await repository.recordPayment(
+      customerId: customerId,
+      amount: 20000,
+      deviceId: deviceId,
+    );
+
+    final db = await database.database;
+    final queueRows = await db.query(
+      'sync_queue',
+      where: 'payment_id = ?',
+      whereArgs: [paymentId],
+      limit: 1,
+    );
+    final operation = queueRows.single;
+
+    final paymentRows = await db.query(
+      'payments',
+      where: 'id = ?',
+      whereArgs: [paymentId],
+      limit: 1,
+    );
+    final payment = paymentRows.single;
+    final operationId = operation['operation_id'] as String;
+
+    api.loseNextResponseFor(operationId);
+    await expectLater(
+      api.submitPayment(
+        operationId: operationId,
+        customerId: customerId,
+        deviceId: operation['device_id'] as String,
+        deviceSequence: operation['device_sequence'] as int,
+        amount: payment['amount'] as int,
+      ),
+      throwsA(isA<MockResponseLost>()),
+    );
+
+    await db.update(
+      'sync_queue',
+      {'status': 'syncing'},
+      where: 'operation_id = ?',
+      whereArgs: [operationId],
+    );
+
+    await database.close();
+    await api.close();
+
+    final restartedApi = MockDebtApi();
+    final worker = SyncWorker(database: database, api: restartedApi);
+    await worker.syncPendingPayments();
+
+    final reopenedDb = await database.database;
+    final savedPayment = await reopenedDb.query(
+      'payments',
+      where: 'id = ?',
+      whereArgs: [paymentId],
+    );
+    final savedOperation = await reopenedDb.query(
+      'sync_queue',
+      where: 'operation_id = ?',
+      whereArgs: [operationId],
+    );
+
+    expect(savedPayment.single['status'], 'confirmed');
+    expect(savedOperation.single['status'], 'confirmed');
+    expect(await _serverBalance(restartedApi, customerId), 130000);
+  });
 }
 
 String _newCustomerId() {
