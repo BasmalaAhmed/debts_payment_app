@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'data/local/app_database.dart';
 import 'data/mock/mock_debt_api.dart';
 import 'data/repos/payment_repo.dart';
-import 'features/customer/customer_debt_screen.dart';
+import 'features/customer/presentation/views/customer_debt_screen.dart';
 
 void main() {
   final api = MockDebtApi();

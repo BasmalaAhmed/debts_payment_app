@@ -1,8 +1,9 @@
 import 'package:debts_payment_app/data/local/models/debt_balance.dart';
 import 'package:debts_payment_app/data/mock/mock_debt_api.dart';
 import 'package:debts_payment_app/data/repos/payment_repo.dart';
-import 'package:debts_payment_app/features/customer/widgets/debt_card.dart';
-import 'package:debts_payment_app/features/customer/widgets/dept_summary_card.dart';
+import 'package:debts_payment_app/features/customer/presentation/views/payment_entry_screen.dart';
+import 'package:debts_payment_app/features/customer/presentation/widgets/debt_card.dart';
+import 'package:debts_payment_app/features/customer/presentation/widgets/dept_summary_card.dart';
 import 'package:flutter/material.dart';
 
 class CustomerDebtScreen extends StatefulWidget {
@@ -61,6 +62,27 @@ class _CustomerDebtScreenState extends State<CustomerDebtScreen> {
     }
   }
 
+  Future<void> _openPaymentEntry() async {
+    final availableAmount = _debts.fold<int>(
+      0,
+      (total, debt) => total + debt.localOutstanding,
+    );
+
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => PaymentEntryScreen(
+          customerId: widget.customerId,
+          repository: widget.repository,
+          availableAmount: availableAmount,
+        ),
+      ),
+    );
+
+    if (saved == true && mounted) {
+      await _loadDebts();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final localTotal = _debts.fold<int>(
@@ -77,11 +99,22 @@ class _CustomerDebtScreenState extends State<CustomerDebtScreen> {
         actions: [
           IconButton(
             onPressed: _loadDebts,
-            tooltip: 'إعادة تحميل البيانات المحلية',
+            tooltip: 'إعادة تحميل البيانات',
             icon: const Icon(Icons.refresh),
           ),
         ],
       ),
+      floatingActionButton: _debts.isEmpty || _isLoading || _error != null
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _openPaymentEntry,
+              icon: const Icon(Icons.payments_outlined, color: Colors.black),
+              label: const Text(
+                'تسجيل تحصيل',
+                style: TextStyle(color: Colors.black),
+              ),
+              backgroundColor: Color(0XFFCAD2C5),
+            ),
       body: _buildBody(localTotal),
     );
   }

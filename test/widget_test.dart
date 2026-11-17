@@ -5,7 +5,7 @@ import 'package:debts_payment_app/data/local/app_database.dart';
 import 'package:debts_payment_app/data/local/models/debt_balance.dart';
 import 'package:debts_payment_app/data/mock/mock_debt_api.dart';
 import 'package:debts_payment_app/data/repos/payment_repo.dart';
-import 'package:debts_payment_app/features/customer/customer_debt_screen.dart';
+import 'package:debts_payment_app/features/customer/presentation/views/customer_debt_screen.dart';
 
 void main() {
   testWidgets('shows customer debt balances', (tester) async {
