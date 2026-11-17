@@ -6,8 +6,14 @@ class MockDebtApi {
   final MockNetwork _network;
   Database? _serverDatabase;
   final Set<String> _operationsWithLostResponses = {};
+  final Duration _requestDelay;
 
-  MockDebtApi({MockNetwork? network}) : _network = network ?? MockNetwork();
+  MockDebtApi({
+    MockNetwork? network,
+    Duration requestDelay = const Duration(milliseconds: 250),
+  }) : _network = network ?? MockNetwork(),
+       // ignore: prefer_initializing_formals
+       _requestDelay = requestDelay;
 
   Future<Database> get _database async {
     final existingDatabase = _serverDatabase;
@@ -328,7 +334,7 @@ class MockDebtApi {
   }
 
   Future<void> _beforeRequest() async {
-    await Future<void>.delayed(const Duration(milliseconds: 250));
+    await Future<void>.delayed(_requestDelay);
 
     if (!_network.isOnline) {
       throw const MockNetworkUnavailable();
