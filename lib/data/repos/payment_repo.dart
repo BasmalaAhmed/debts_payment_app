@@ -1,12 +1,15 @@
 import 'package:debts_payment_app/data/local/app_database.dart';
 import 'package:debts_payment_app/data/local/models/debt_balance.dart';
 import 'package:debts_payment_app/data/local/models/debt_record.dart';
+import 'package:debts_payment_app/data/local/models/sync_operation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 
 class PaymentRepo {
-  PaymentRepo({required this._database, Uuid? uuid})
-    : _uuid = uuid ?? const Uuid();
+  PaymentRepo({required AppDatabase database, Uuid? uuid})
+    // ignore: prefer_initializing_formals
+    : _database = database,
+      _uuid = uuid ?? const Uuid();
 
   final AppDatabase _database;
   final Uuid _uuid;
@@ -174,28 +177,48 @@ class PaymentRepo {
   }
 
   Future<String> getOrCreateDeviceId() async {
-  final db = await _database.database;
+    final db = await _database.database;
 
-  return db.transaction((txn) async {
-    final rows = await txn.query(
-      'app_metadata',
-      where: 'key = ?',
-      whereArgs: ['device_id'],
-      limit: 1,
-    );
+    return db.transaction((txn) async {
+      final rows = await txn.query(
+        'app_metadata',
+        where: 'key = ?',
+        whereArgs: ['device_id'],
+        limit: 1,
+      );
 
-    if (rows.isNotEmpty) {
-      return rows.single['value'] as String;
-    }
+      if (rows.isNotEmpty) {
+        return rows.single['value'] as String;
+      }
 
-    final deviceId = _uuid.v4();
+      final deviceId = _uuid.v4();
 
-    await txn.insert('app_metadata', {
-      'key': 'device_id',
-      'value': deviceId,
+      await txn.insert('app_metadata', {'key': 'device_id', 'value': deviceId});
+
+      return deviceId;
     });
+  }
 
-    return deviceId;
-  });
-}
+  Future<List<SyncOperation>> getSyncOperations() async {
+    final db = await _database.database;
+
+    final rows = await db.rawQuery('''
+    SELECT
+      q.operation_id,
+      q.payment_id,
+      q.device_id,
+      q.device_sequence,
+      q.status AS sync_status,
+      q.last_error,
+      q.created_at,
+      p.customer_id,
+      p.amount,
+      p.status AS payment_status
+    FROM sync_queue q
+    JOIN payments p ON p.id = q.payment_id
+    ORDER BY q.device_id ASC, q.device_sequence ASC
+  ''');
+
+    return rows.map(SyncOperation.fromRow).toList();
+  }
 }

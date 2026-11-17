@@ -1,15 +1,19 @@
+import 'package:debts_payment_app/app/main_navigation_shell.dart';
+import 'package:debts_payment_app/data/local/app_database.dart';
+import 'package:debts_payment_app/data/mock/mock_debt_api.dart';
+import 'package:debts_payment_app/data/repos/payment_repo.dart';
+import 'package:debts_payment_app/data/services/sync_worker.dart';
 import 'package:flutter/material.dart';
 
-import 'data/local/app_database.dart';
-import 'data/mock/mock_debt_api.dart';
-import 'data/repos/payment_repo.dart';
-import 'features/customer/presentation/views/customer_debt_screen.dart';
-
 void main() {
+  final database = AppDatabase.instance;
   final api = MockDebtApi();
-  final repository = PaymentRepo(database: AppDatabase.instance);
+  final repository = PaymentRepo(database: database);
+  final syncWorker = SyncWorker(database: database, api: api);
 
-  runApp(DebtPaymentApp(api: api, repository: repository));
+  runApp(
+    DebtPaymentApp(api: api, repository: repository, syncWorker: syncWorker),
+  );
 }
 
 class DebtPaymentApp extends StatelessWidget {
@@ -17,10 +21,12 @@ class DebtPaymentApp extends StatelessWidget {
     super.key,
     required this.api,
     required this.repository,
+    required this.syncWorker,
   });
 
   final MockDebtApi api;
   final PaymentRepo repository;
+  final SyncWorker syncWorker;
 
   @override
   Widget build(BuildContext context) {
@@ -33,10 +39,10 @@ class DebtPaymentApp extends StatelessWidget {
           child: child ?? const SizedBox.shrink(),
         );
       },
-      home: CustomerDebtScreen(
-        customerId: 'customer-001',
-        repository: repository,
+      home: MainNavigationShell(
         api: api,
+        repository: repository,
+        syncWorker: syncWorker,
       ),
     );
   }
