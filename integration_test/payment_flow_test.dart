@@ -245,6 +245,67 @@ void main() {
     expect(savedOperation.single['status'], 'confirmed');
     expect(await _serverBalance(restartedApi, customerId), 130000);
   });
+
+  testWidgets('payment and allocations roll back if queue insert fails', (
+    _,
+  ) async {
+    final customerId = _newCustomerId();
+    const deviceId = 'emulator-device';
+    const triggerName = 'force_sync_queue_insert_failure';
+
+    final database = AppDatabase.instance;
+    final repository = PaymentRepo(database: database);
+    final api = MockDebtApi();
+
+    await _seedLocalDebts(api, repository, customerId);
+
+    final db = await database.database;
+    final queueCountBefore = await db.rawQuery(
+      'SELECT COUNT(*) AS total FROM sync_queue',
+    );
+    final previousQueueCount = queueCountBefore.single['total'] as int;
+
+    await db.execute('''
+    CREATE TRIGGER $triggerName
+    BEFORE INSERT ON sync_queue
+    BEGIN
+      SELECT RAISE(ABORT, 'forced queue insert failure');
+    END;
+  ''');
+
+    try {
+      await expectLater(
+        repository.recordPayment(
+          customerId: customerId,
+          amount: 20000,
+          deviceId: deviceId,
+        ),
+        throwsA(isA<Exception>()),
+      );
+    } finally {
+      await db.execute('DROP TRIGGER IF EXISTS $triggerName');
+    }
+
+    final payments = await db.query(
+      'payments',
+      where: 'customer_id = ?',
+      whereArgs: [customerId],
+    );
+
+    final allocations = await db.query(
+      'payment_allocations',
+      where: 'debt_id IN (?, ?)',
+      whereArgs: ['$customerId-debt-001', '$customerId-debt-002'],
+    );
+
+    final queueCountAfter = await db.rawQuery(
+      'SELECT COUNT(*) AS total FROM sync_queue',
+    );
+
+    expect(payments, isEmpty);
+    expect(allocations, isEmpty);
+    expect(queueCountAfter.single['total'], previousQueueCount);
+  });
 }
 
 String _newCustomerId() {
