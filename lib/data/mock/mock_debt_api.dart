@@ -10,10 +10,8 @@ class MockDebtApi {
 
   MockDebtApi({
     MockNetwork? network,
-    Duration requestDelay = const Duration(milliseconds: 250),
-  }) : _network = network ?? MockNetwork(),
-       // ignore: prefer_initializing_formals
-       _requestDelay = requestDelay;
+    this._requestDelay = const Duration(milliseconds: 250),
+  }) : _network = network ?? MockNetwork();
 
   Future<Database> get _database async {
     final existingDatabase = _serverDatabase;
@@ -24,7 +22,7 @@ class MockDebtApi {
 
     final database = await openDatabase(
       databasePath,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE server_debts (
@@ -32,7 +30,8 @@ class MockDebtApi {
             customer_id TEXT NOT NULL,
             original_amount INTEGER NOT NULL,
             outstanding INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            due_date TEXT
           )
         ''');
 
@@ -64,6 +63,11 @@ class MockDebtApi {
         version INTEGER NOT NULL
       )
     ''');
+          if (oldVersion < 3) {
+            await db.execute(
+              'ALTER TABLE server_debts ADD COLUMN due_date TEXT',
+            );
+          }
 
           await db.execute('''
       INSERT INTO server_versions (customer_id, version)
@@ -104,6 +108,7 @@ class MockDebtApi {
           'server_outstanding': row['outstanding'],
           'created_at': row['created_at'],
           'server_version': serverVersion,
+          'due_date': row['due_date'],
         };
       }).toList();
     });
@@ -158,6 +163,7 @@ class MockDebtApi {
       );
 
       final actualServerVersion = await _serverVersion(txn, customerId);
+      final other = await _lastOtherDeviceOperation(txn, customerId, deviceId);
 
       if (expectedServerVersion != null &&
           expectedServerVersion != actualServerVersion) {
@@ -166,6 +172,9 @@ class MockDebtApi {
           serverBalance: serverBalance,
           expectedServerVersion: expectedServerVersion,
           actualServerVersion: actualServerVersion,
+          otherDeviceId: other?.deviceId,
+          otherAmount: other?.amount,
+          otherAt: other?.at,
         );
       }
 
@@ -173,6 +182,9 @@ class MockDebtApi {
         throw MockPaymentConflict(
           requestedAmount: amount,
           serverBalance: serverBalance,
+          otherDeviceId: other?.deviceId,
+          otherAmount: other?.amount,
+          otherAt: other?.at,
         );
       }
 
@@ -228,6 +240,7 @@ class MockDebtApi {
   Future<void> simulateOtherDevicePayment({
     required String customerId,
     required int amount,
+    String deviceId = 'B2',
   }) async {
     if (amount <= 0) {
       throw ArgumentError.value(amount, 'amount', 'Must be greater than zero');
@@ -276,6 +289,16 @@ class MockDebtApi {
 
         remaining -= deducted;
       }
+      await txn.insert('server_operations', {
+        'operation_id': 'other-${DateTime.now().microsecondsSinceEpoch}',
+        'customer_id': customerId,
+        'device_id': deviceId,
+        'device_sequence': 0,
+        'amount': amount,
+        'server_balance_after': serverBalance - amount,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      });
+
       await _incrementServerVersion(txn, customerId);
     });
   }
@@ -298,6 +321,7 @@ class MockDebtApi {
         'original_amount': 100000,
         'outstanding': 100000,
         'created_at': now.subtract(const Duration(days: 60)).toIso8601String(),
+        'due_date': now.subtract(const Duration(days: 12)).toIso8601String(),
       });
 
       await txn.insert('server_debts', {
@@ -306,6 +330,7 @@ class MockDebtApi {
         'original_amount': 50000,
         'outstanding': 50000,
         'created_at': now.subtract(const Duration(days: 30)).toIso8601String(),
+        'due_date': now.add(const Duration(days: 12)).toIso8601String(),
       });
     }
 
@@ -325,12 +350,45 @@ class MockDebtApi {
     }
   }
 
+  Future<({String deviceId, int amount, DateTime at})?>
+  _lastOtherDeviceOperation(
+    Transaction txn,
+    String customerId,
+    String deviceId,
+  ) async {
+    final rows = await txn.query(
+      'server_operations',
+      where: 'customer_id = ? AND device_id != ?',
+      whereArgs: [customerId, deviceId],
+      orderBy: 'created_at DESC',
+      limit: 1,
+    );
+
+    if (rows.isEmpty) return null;
+
+    final row = rows.single;
+    return (
+      deviceId: row['device_id'] as String,
+      amount: row['amount'] as int,
+      at: DateTime.parse(row['created_at'] as String),
+    );
+  }
+
   Future<void> close() async {
     final database = _serverDatabase;
     if (database == null) return;
 
     await database.close();
     _serverDatabase = null;
+  }
+
+  Future<int> countServerOperations(String operationId) async {
+    final db = await _database;
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS total FROM server_operations WHERE operation_id = ?',
+      [operationId],
+    );
+    return rows.single['total'] as int;
   }
 
   Future<void> _beforeRequest() async {
@@ -390,12 +448,18 @@ class MockPaymentConflict implements Exception {
     required this.serverBalance,
     this.expectedServerVersion,
     this.actualServerVersion,
+    this.otherDeviceId,
+    this.otherAmount,
+    this.otherAt,
   });
 
   final int requestedAmount;
   final int serverBalance;
   final int? expectedServerVersion;
   final int? actualServerVersion;
+  final String? otherDeviceId;
+  final int? otherAmount;
+  final DateTime? otherAt;
 
   @override
   String toString() {

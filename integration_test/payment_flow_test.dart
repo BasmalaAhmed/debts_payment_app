@@ -106,6 +106,15 @@ void main() {
     expect(paymentRows.single['status'], 'local');
     expect(await _serverBalance(api, customerId), 130000);
 
+    var queueAfterLoss = await db.query(
+      'sync_queue',
+      where: 'operation_id = ?',
+      whereArgs: [operationId],
+    );
+    expect(queueAfterLoss.single['status'], 'pending');
+    expect(queueAfterLoss.single['outcome_unknown'], 1);
+    expect(queueAfterLoss.single['already_processed'], 0);
+
     await worker.syncPendingPayments();
 
     paymentRows = await db.query(
@@ -115,6 +124,18 @@ void main() {
     );
     expect(paymentRows.single['status'], 'confirmed');
     expect(await _serverBalance(api, customerId), 130000);
+
+    queueAfterLoss = await db.query(
+      'sync_queue',
+      where: 'operation_id = ?',
+      whereArgs: [operationId],
+    );
+    expect(queueAfterLoss.single['status'], 'confirmed');
+    expect(queueAfterLoss.single['outcome_unknown'], 0);
+    expect(queueAfterLoss.single['already_processed'], 1);
+    expect(queueAfterLoss.single['confirmed_at'], isNotNull);
+
+    expect(await api.countServerOperations(operationId), 1);
   });
 
   testWidgets('server conflict keeps the local payment for review', (_) async {
@@ -153,11 +174,212 @@ void main() {
     expect(paymentRows.single['amount'], 120000);
     expect(paymentRows.single['status'], 'conflict');
     expect(queueRows.single['status'], 'conflict');
+    expect(queueRows.single['conflict_server_balance'], 100000);
+    expect(queueRows.single['conflict_other_device'], 'B2');
+    expect(queueRows.single['conflict_other_amount'], 50000);
+    expect(queueRows.single['outcome_unknown'], 0);
     expect(queueRows.single['expected_server_version'], 1);
     expect(queueRows.single['last_error'], contains('Server version changed'));
     expect(queueRows.single['last_error'], contains('100000'));
     expect(await _serverBalance(api, customerId), 100000);
   });
+
+  testWidgets('cancelling a conflict keeps the record and syncs the balance', (
+    _,
+  ) async {
+    final customerId = _newCustomerId();
+    const deviceId = 'emulator-device';
+
+    final database = AppDatabase.instance;
+    final repository = PaymentRepo(database: database);
+    final api = MockDebtApi();
+
+    await _seedLocalDebts(api, repository, customerId);
+    await api.simulateOtherDevicePayment(customerId: customerId, amount: 50000);
+
+    final paymentId = await repository.recordPayment(
+      customerId: customerId,
+      amount: 120000,
+      deviceId: deviceId,
+    );
+    await SyncWorker(database: database, api: api).syncPendingPayments();
+
+    final db = await database.database;
+    final queue = await db.query(
+      'sync_queue',
+      where: 'payment_id = ?',
+      whereArgs: [paymentId],
+    );
+    final operationId = queue.single['operation_id'] as String;
+    expect(queue.single['status'], 'conflict');
+
+    await repository.cancelConflictedPayment(
+      operationId: operationId,
+      serverDebts: await api.fetchDebts(customerId),
+    );
+
+    final payment = await db.query(
+      'payments',
+      where: 'id = ?',
+      whereArgs: [paymentId],
+    );
+    final queueAfter = await db.query(
+      'sync_queue',
+      where: 'operation_id = ?',
+      whereArgs: [operationId],
+    );
+
+    expect(payment.single['status'], 'cancelled');
+    expect(payment.single['amount'], 120000);
+    expect(queueAfter.single['status'], 'cancelled');
+    expect(queueAfter.single['resolved_at'], isNotNull);
+
+    final balances = await repository.getDebtBalances(customerId);
+    expect(balances.fold<int>(0, (t, d) => t + d.localOutstanding), 100000);
+  });
+
+  testWidgets(
+    'replacing a conflict creates a new operation and keeps the old',
+    (_) async {
+      final customerId = _newCustomerId();
+      const deviceId = 'emulator-device';
+
+      final database = AppDatabase.instance;
+      final repository = PaymentRepo(database: database);
+      final api = MockDebtApi();
+
+      await _seedLocalDebts(api, repository, customerId);
+      await api.simulateOtherDevicePayment(
+        customerId: customerId,
+        amount: 50000,
+      );
+
+      final oldPaymentId = await repository.recordPayment(
+        customerId: customerId,
+        amount: 120000,
+        deviceId: deviceId,
+      );
+      final worker = SyncWorker(database: database, api: api);
+      await worker.syncPendingPayments();
+
+      final db = await database.database;
+      final oldQueue = (await db.query(
+        'sync_queue',
+        where: 'payment_id = ?',
+        whereArgs: [oldPaymentId],
+      )).single;
+      final oldOperationId = oldQueue['operation_id'] as String;
+      final oldSequence = oldQueue['device_sequence'] as int;
+
+      final newPaymentId = await repository.replaceConflictedPayment(
+        operationId: oldOperationId,
+        serverDebts: await api.fetchDebts(customerId),
+      );
+
+      final oldPayment = (await db.query(
+        'payments',
+        where: 'id = ?',
+        whereArgs: [oldPaymentId],
+      )).single;
+      final oldQueueAfter = (await db.query(
+        'sync_queue',
+        where: 'operation_id = ?',
+        whereArgs: [oldOperationId],
+      )).single;
+      expect(oldPayment['amount'], 120000);
+      expect(oldPayment['status'], 'superseded');
+      expect(oldQueueAfter['status'], 'superseded');
+
+      final newPayment = (await db.query(
+        'payments',
+        where: 'id = ?',
+        whereArgs: [newPaymentId],
+      )).single;
+      final newQueue = (await db.query(
+        'sync_queue',
+        where: 'payment_id = ?',
+        whereArgs: [newPaymentId],
+      )).single;
+      expect(newPayment['amount'], 100000);
+      expect(newQueue['operation_id'], isNot(oldOperationId));
+      expect(newQueue['device_sequence'], oldSequence + 1);
+      expect(
+        oldQueueAfter['replaced_by_sequence'],
+        newQueue['device_sequence'],
+      );
+      expect(newQueue['replaces_sequence'], oldSequence);
+      expect(newQueue['status'], 'pending');
+
+      await worker.syncPendingPayments();
+      final confirmed = (await db.query(
+        'sync_queue',
+        where: 'payment_id = ?',
+        whereArgs: [newPaymentId],
+      )).single;
+      expect(confirmed['status'], 'confirmed');
+      expect(await _serverBalance(api, customerId), 0);
+    },
+  );
+
+  testWidgets(
+    'resolving a conflict is blocked while another op is unconfirmed',
+    (_) async {
+      final customerId = _newCustomerId();
+      const deviceId = 'emulator-device';
+
+      final database = AppDatabase.instance;
+      final repository = PaymentRepo(database: database);
+      final api = MockDebtApi();
+
+      await _seedLocalDebts(api, repository, customerId);
+      await api.simulateOtherDevicePayment(
+        customerId: customerId,
+        amount: 50000,
+      );
+
+      final conflictedId = await repository.recordPayment(
+        customerId: customerId,
+        amount: 120000,
+        deviceId: deviceId,
+      );
+      await SyncWorker(database: database, api: api).syncPendingPayments();
+
+      final secondId = await repository.recordPayment(
+        customerId: customerId,
+        amount: 10000,
+        deviceId: deviceId,
+      );
+      final db = await database.database;
+      await db.update(
+        'sync_queue',
+        {'outcome_unknown': 1},
+        where: 'payment_id = ?',
+        whereArgs: [secondId],
+      );
+
+      final operationId =
+          (await db.query(
+                'sync_queue',
+                where: 'payment_id = ?',
+                whereArgs: [conflictedId],
+              )).single['operation_id']
+              as String;
+
+      await expectLater(
+        repository.cancelConflictedPayment(
+          operationId: operationId,
+          serverDebts: await api.fetchDebts(customerId),
+        ),
+        throwsA(isA<ConflictResolutionBlocked>()),
+      );
+      final stillConflict = await db.query(
+        'sync_queue',
+        where: 'operation_id = ?',
+        whereArgs: [operationId],
+      );
+      expect(stillConflict.single['status'], 'conflict');
+    },
+  );
 
   testWidgets('device ID remains stable after database reopen', (_) async {
     final database = AppDatabase.instance;
@@ -247,6 +469,8 @@ void main() {
 
     expect(savedPayment.single['status'], 'confirmed');
     expect(savedOperation.single['status'], 'confirmed');
+    expect(savedOperation.single['already_processed'], 1);
+    expect(savedOperation.single['outcome_unknown'], 0);
     expect(await _serverBalance(restartedApi, customerId), 130000);
   });
 

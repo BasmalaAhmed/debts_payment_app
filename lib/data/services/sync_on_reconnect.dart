@@ -1,5 +1,3 @@
-// ignore_for_file: prefer_initializing_formals
-
 import 'dart:async';
 
 import 'package:debts_payment_app/data/mock/mock_network.dart';
@@ -7,12 +5,10 @@ import 'package:debts_payment_app/data/services/sync_worker.dart';
 
 class SyncOnReconnect {
   SyncOnReconnect({
-    required MockNetwork network,
-    required SyncWorker syncWorker,
-    void Function(Object error)? onError,
-  }) : _network = network,
-       _syncWorker = syncWorker,
-       _onError = onError {
+    required this._network,
+    required this._syncWorker,
+    this._onError,
+  }) {
     _subscription = _network.changes.listen((isOnline) {
       if (isOnline) {
         unawaited(_runSync());
@@ -34,6 +30,8 @@ class SyncOnReconnect {
   bool _isSyncing = false;
 
   Stream<void> get syncCompleted => _syncCompleted.stream;
+
+  Future<void> syncNow() => _runSync();
 
   Future<void> _runSync() async {
     if (_isSyncing) return;

@@ -1,13 +1,15 @@
 import 'dart:async';
 
+import 'package:debts_payment_app/data/local/models/queue_summary.dart';
 import 'package:debts_payment_app/data/mock/mock_debt_api.dart';
 import 'package:debts_payment_app/data/mock/mock_network.dart';
 import 'package:debts_payment_app/data/repos/payment_repo.dart';
 import 'package:debts_payment_app/data/services/device_connectivity_observer.dart';
 import 'package:debts_payment_app/data/services/sync_on_reconnect.dart';
 import 'package:debts_payment_app/data/services/sync_worker.dart';
-import 'package:debts_payment_app/features/customer/presentation/views/customer_debt_screen.dart';
-import 'package:debts_payment_app/features/customer/presentation/views/pending_operations_screen.dart';
+import 'package:debts_payment_app/features/customer/presentation/views/customer_debt_view.dart';
+import 'package:debts_payment_app/features/customer/presentation/views/pending_operations_view.dart';
+import 'package:debts_payment_app/features/customer/presentation/widgets/app_bottom_nav.dart';
 import 'package:flutter/material.dart';
 
 class MainNavigationShell extends StatefulWidget {
@@ -32,60 +34,86 @@ class MainNavigationShell extends StatefulWidget {
 
 class _MainNavigationShellState extends State<MainNavigationShell> {
   late final SyncOnReconnect _syncOnReconnect;
+  late final StreamSubscription<void> _syncSubscription;
+  final ValueNotifier<QueueSummary> _summary = ValueNotifier(
+    QueueSummary.empty,
+  );
+
+  int _selectedIndex = 0;
 
   @override
   void initState() {
     super.initState();
+
     _syncOnReconnect = SyncOnReconnect(
       network: widget.network,
       syncWorker: widget.syncWorker,
     );
+
+    _syncSubscription = _syncOnReconnect.syncCompleted.listen((_) {
+      _refreshSummary();
+    });
+
+    _refreshSummary();
   }
 
   @override
   void dispose() {
+    _syncSubscription.cancel();
+    _summary.dispose();
     unawaited(_syncOnReconnect.dispose());
     unawaited(widget.connectivityObserver.dispose());
     super.dispose();
   }
 
-  int _selectedIndex = 0;
+  Future<void> _refreshSummary() async {
+    try {
+      final summary = await widget.repository.getQueueSummary();
+      if (!mounted) return;
+      _summary.value = summary;
+    } catch (_) {
+      return;
+    }
+  }
+
+  void _onPaymentSaved() {
+    _refreshSummary();
+    if (widget.network.isOnline) {
+      unawaited(_syncOnReconnect.syncNow());
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: _selectedIndex == 0
-          ? CustomerDebtScreen(
+          ? CustomerDebtView(
               customerId: 'customer-001',
               repository: widget.repository,
               api: widget.api,
+              network: widget.network,
+              syncCompleted: _syncOnReconnect.syncCompleted,
+              onChanged: _onPaymentSaved,
             )
-          : PendingOperationsScreen(
+          : PendingOperationsView(
               repository: widget.repository,
-              syncWorker: widget.syncWorker,
+              api: widget.api,
               network: widget.network,
               syncOnReconnect: _syncOnReconnect,
+              onChanged: _onPaymentSaved,
             ),
-      bottomNavigationBar: NavigationBar(
-        indicatorColor: Color(0XFF52796F).withValues(alpha: 0.15),
-        backgroundColor: Color(0XFFCAD2C5),
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) {
-          setState(() => _selectedIndex = index);
+      bottomNavigationBar: ValueListenableBuilder<QueueSummary>(
+        valueListenable: _summary,
+        builder: (context, summary, child) {
+          return AppBottomNav(
+            selectedIndex: _selectedIndex,
+            summary: summary,
+            onSelected: (index) {
+              setState(() => _selectedIndex = index);
+              _refreshSummary();
+            },
+          );
         },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(
-              Icons.account_balance_wallet_outlined,
-              color: Color(0XFF52796F),
-            ),
-            label: 'المديونيات',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.sync, color: Color(0XFF52796F)),
-            label: 'عمليات التحصيل',
-          ),
-        ],
       ),
     );
   }

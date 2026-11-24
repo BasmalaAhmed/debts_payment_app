@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
 import 'package:debts_payment_app/data/local/app_database.dart';
 import 'package:debts_payment_app/data/local/models/debt_balance.dart';
+import 'package:debts_payment_app/data/local/models/sync_operation.dart';
 import 'package:debts_payment_app/data/mock/mock_debt_api.dart';
+import 'package:debts_payment_app/data/mock/mock_network.dart';
 import 'package:debts_payment_app/data/repos/payment_repo.dart';
-import 'package:debts_payment_app/features/customer/presentation/views/customer_debt_screen.dart';
+import 'package:debts_payment_app/features/customer/presentation/views/customer_debt_view.dart';
 
 void main() {
   testWidgets('shows customer debt balances', (tester) async {
@@ -15,21 +16,25 @@ void main() {
           textDirection: TextDirection.rtl,
           child: child ?? const SizedBox.shrink(),
         ),
-        home: CustomerDebtScreen(
-          customerId: 'widget-test-customer',
+        home: CustomerDebtView(
+          customerId: 'customer-001',
           repository: _FakePaymentRepo(),
           api: MockDebtApi(),
+          network: MockNetwork(),
+          syncCompleted: const Stream<void>.empty(),
         ),
       ),
     );
 
     await tester.pumpAndSettle();
 
-    expect(find.text('مديونيات العميل'), findsOneWidget);
-    expect(find.text('إجمالي المتبقي على الجهاز'), findsOneWidget);
-    expect(find.text('1500.00 ج.م'), findsOneWidget);
+    expect(find.text('سعاد عبد الرحمن'), findsOneWidget);
+    expect(find.text('1,500.00 ج.م'), findsOneWidget);
+    expect(find.text('مطابق للخادم'), findsOneWidget);
     expect(find.text('مديونية 1'), findsOneWidget);
     expect(find.text('مديونية 2'), findsOneWidget);
+    expect(find.text('تُحصَّل أولاً'), findsOneWidget);
+    expect(find.text('تسجيل تحصيل'), findsOneWidget);
   });
 }
 
@@ -53,4 +58,7 @@ class _FakePaymentRepo extends PaymentRepo {
       ),
     ];
   }
+
+  @override
+  Future<List<SyncOperation>> getSyncOperations() async => [];
 }

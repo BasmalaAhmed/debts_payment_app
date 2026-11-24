@@ -17,7 +17,7 @@ class AppDatabase {
 
     final database = await openDatabase(
       path,
-      version: 2,
+      version: 5,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE debts (
@@ -25,7 +25,8 @@ class AppDatabase {
             customer_id TEXT NOT NULL,
             original_amount INTEGER NOT NULL,
             server_outstanding INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            due_date TEXT
           )
         ''');
 
@@ -52,16 +53,26 @@ class AppDatabase {
 
         await db.execute('''
           CREATE TABLE sync_queue (
-            operation_id TEXT PRIMARY KEY,
-            expected_server_version INTEGER,
-            device_id TEXT NOT NULL,
-            device_sequence INTEGER NOT NULL,
-            payment_id TEXT NOT NULL UNIQUE,
-            status TEXT NOT NULL,
-            last_error TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (payment_id) REFERENCES payments(id)
-          )
+          operation_id TEXT PRIMARY KEY,
+          expected_server_version INTEGER,
+          device_id TEXT NOT NULL,
+          device_sequence INTEGER NOT NULL,
+          payment_id TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL,
+          last_error TEXT,
+          created_at TEXT NOT NULL,
+          outcome_unknown INTEGER NOT NULL DEFAULT 0,
+          already_processed INTEGER NOT NULL DEFAULT 0,
+          confirmed_at TEXT,
+          conflict_server_balance INTEGER,
+          conflict_other_device TEXT,
+          conflict_other_amount INTEGER,
+          conflict_other_at TEXT,
+          resolved_at TEXT,
+          replaced_by_sequence INTEGER,
+          replaces_sequence INTEGER,
+    FOREIGN KEY (payment_id) REFERENCES payments(id)
+  )
         ''');
 
         await db.execute('''
@@ -76,6 +87,31 @@ class AppDatabase {
           await db.execute(
             'ALTER TABLE sync_queue ADD COLUMN expected_server_version INTEGER',
           );
+        }
+        if (oldVersion < 3) {
+          await db.execute('ALTER TABLE debts ADD COLUMN due_date TEXT');
+        }
+        if (oldVersion < 4) {
+          for (final column in const [
+            'outcome_unknown INTEGER NOT NULL DEFAULT 0',
+            'already_processed INTEGER NOT NULL DEFAULT 0',
+            'confirmed_at TEXT',
+            'conflict_server_balance INTEGER',
+            'conflict_other_device TEXT',
+            'conflict_other_amount INTEGER',
+            'conflict_other_at TEXT',
+          ]) {
+            await db.execute('ALTER TABLE sync_queue ADD COLUMN $column');
+          }
+        }
+        if (oldVersion < 5) {
+          for (final column in const [
+            'resolved_at TEXT',
+            'replaced_by_sequence INTEGER',
+            'replaces_sequence INTEGER',
+          ]) {
+            await db.execute('ALTER TABLE sync_queue ADD COLUMN $column');
+          }
         }
       },
     );

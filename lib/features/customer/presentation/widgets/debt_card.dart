@@ -1,30 +1,38 @@
-import 'package:debts_payment_app/core/formatters/egp_formatter.dart';
+import 'package:debts_payment_app/core/theme/app_colors.dart';
 import 'package:debts_payment_app/data/local/models/debt_balance.dart';
+import 'package:debts_payment_app/features/customer/presentation/widgets/debt_card_content.dart';
 import 'package:flutter/material.dart';
 
 class DebtCard extends StatelessWidget {
-  const DebtCard({super.key, required this.number, required this.debt});
+  const DebtCard({super.key, required this.debts});
 
-  final int number;
-  final DebtBalance debt;
+  final List<DebtBalance> debts;
 
   @override
   Widget build(BuildContext context) {
+    final firstOpenIndex = debts.indexWhere((d) => d.localOutstanding > 0);
+
     return Card(
-      color: Color(0XFFD5F9DE),
-      child: ListTile(
-        title: Text(
-          'مديونية $number',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-        ),
-        subtitle: Text(
-          'رصيد السيرفر المحفوظ: '
-          '${formatEgp(debt.serverOutstanding)}\n'
-          'المتبقي محليًا: '
-          '${formatEgp(debt.localOutstanding)}',
-          style: TextStyle(fontSize: 16),
-        ),
-        isThreeLine: true,
+      color: AppColors.surface,
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: AppColors.cardBorder),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          for (var index = 0; index < debts.length; index++) ...[
+            DebtCardContent(
+              number: index + 1,
+              debt: debts[index],
+              isFirstOpen: index == firstOpenIndex,
+            ),
+            if (index < debts.length - 1)
+              const Divider(height: 1, thickness: 1, indent: 16, endIndent: 16),
+          ],
+        ],
       ),
     );
   }

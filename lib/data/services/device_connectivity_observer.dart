@@ -6,11 +6,9 @@ import 'package:flutter/widgets.dart';
 
 class DeviceConnectivityObserver with WidgetsBindingObserver {
   DeviceConnectivityObserver({
-    required MockNetwork network,
+    required this._network,
     Connectivity? connectivity,
-  // ignore: prefer_initializing_formals
-  }) : _network = network,
-       _connectivity = connectivity ?? Connectivity();
+  }) : _connectivity = connectivity ?? Connectivity();
 
   final MockNetwork _network;
   final Connectivity _connectivity;

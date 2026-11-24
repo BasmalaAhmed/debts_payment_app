@@ -1,4 +1,5 @@
 import 'package:debts_payment_app/app/main_navigation_shell.dart';
+import 'package:debts_payment_app/core/theme/app_theme.dart';
 import 'package:debts_payment_app/data/local/app_database.dart';
 import 'package:debts_payment_app/data/mock/mock_debt_api.dart';
 import 'package:debts_payment_app/data/mock/mock_network.dart';
@@ -19,6 +20,7 @@ Future<void> main() async {
   final api = MockDebtApi(network: network);
   final repository = PaymentRepo(database: database);
   final syncWorker = SyncWorker(database: database, api: api);
+  await syncWorker.recoverInterrupted();
 
   runApp(
     DebtPaymentApp(
@@ -52,6 +54,7 @@ class DebtPaymentApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'تحصيل الأقساط',
+      theme: AppTheme.lightTheme,
       builder: (context, child) {
         return Directionality(
           textDirection: TextDirection.rtl,

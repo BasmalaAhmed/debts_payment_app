@@ -1,48 +1,149 @@
+import 'package:debts_payment_app/core/customers/customer_info.dart';
 import 'package:debts_payment_app/core/formatters/egp_formatter.dart';
+import 'package:debts_payment_app/core/formatters/time_formatter.dart';
+import 'package:debts_payment_app/core/theme/app_colors.dart';
+import 'package:debts_payment_app/core/theme/app_styles.dart';
 import 'package:debts_payment_app/data/local/models/sync_operation.dart';
+import 'package:debts_payment_app/features/customer/presentation/widgets/status_badge.dart';
 import 'package:flutter/material.dart';
 
 class SyncOperationCard extends StatelessWidget {
-  const SyncOperationCard({super.key, required this.operation});
+  const SyncOperationCard({super.key, required this.operation, this.onTap});
 
   final SyncOperation operation;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final status = _statusLabel(operation.syncStatus);
-    final colorScheme = Theme.of(context).colorScheme;
+    final op = operation;
+    final isConflict = op.uiState == OpUiState.conflict;
+    final (badgeText, tone) = _badge(op.uiState);
+    final note = _note(op);
 
-    return Card(
-      color: Color(0XFFD5F9DE),
-      child: ListTile(
-        title: Text('تحصيل ${formatEgp(operation.amount)}'),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('رقم العملية: ${operation.deviceSequence}'),
-            const SizedBox(height: 4),
-            Text(status.label),
-            if (operation.lastError != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                operation.lastError!,
-                style: TextStyle(color: colorScheme.error),
-              ),
-            ],
-          ],
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(
+            color: isConflict ? AppColors.conflictText : AppColors.cardBorder,
+            width: isConflict ? 1.2 : 1,
+          ),
         ),
-        isThreeLine: operation.lastError != null,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(formatEgp(op.amount), style: AppStyles.amountMedium),
+                    StatusBadge(text: badgeText, tone: tone),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  customerInfoFor(op.customerId).name,
+                  style: const TextStyle(
+                    fontSize: 13.5,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'ترتيب ${op.deviceSequence} · '
+                  '${formatClock(op.createdAt)} · ${op.displayId}',
+                  style: AppStyles.cardSubtitle,
+                ),
+                if (note != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    note.text,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: note.color,
+                      height: 1.5,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
 
-  ({String label, Color color}) _statusLabel(String status) {
-    return switch (status) {
-      'pending' => (label: 'منتظر المزامنة', color: Colors.orange),
-      'syncing' => (label: 'جاري الإرسال', color: Colors.blue),
-      'confirmed' => (label: 'تم تأكيد التحصيل', color: Colors.green),
-      'conflict' => (label: 'يحتاج الى مراجعة', color: Colors.red),
-      _ => (label: 'حالة غير معروفة: $status', color: Colors.grey),
-    };
+  (String, BadgeTone) _badge(OpUiState state) => switch (state) {
+    OpUiState.conflict => ('تعارض', BadgeTone.red),
+    OpUiState.verifying => ('جارٍ التأكد', BadgeTone.blue),
+    OpUiState.syncing => ('جارٍ الإرسال', BadgeTone.blue),
+    OpUiState.pending => ('على الجهاز', BadgeTone.orange),
+    OpUiState.confirmed => ('تم', BadgeTone.green),
+    OpUiState.cancelled => ('أُلغيت', BadgeTone.grey),
+    OpUiState.superseded => ('استُبدلت', BadgeTone.grey),
+  };
+
+  ({String text, Color color})? _note(SyncOperation op) {
+    switch (op.uiState) {
+      case OpUiState.conflict:
+        final balance = op.conflictServerBalance;
+        return (
+          text: balance == null
+              ? 'تعارض مع الخادم. اضغط لعرض التفاصيل.'
+              : 'المتبقي على الخادم ${formatEgp(balance)} فقط. '
+                    'اضغط لعرض التفاصيل.',
+          color: AppColors.conflictText,
+        );
+      case OpUiState.verifying:
+        return (
+          text:
+              'لم يصلنا رد الخادم. سنعيد الإرسال بالرقم نفسه '
+              'ولن تُسجَّل مرتين.',
+          color: AppColors.syncingText,
+        );
+      case OpUiState.confirmed:
+        if (op.alreadyProcessed) {
+          return (
+            text: 'تم التحقق: الخادم سجّلها من قبل. تحصيل واحد فقط دون تكرار.',
+            color: AppColors.syncedText,
+          );
+        }
+        final at = op.confirmedAt;
+        return at == null
+            ? null
+            : (
+                text: 'أكّده الخادم ${formatClock(at)}',
+                color: AppColors.syncedText,
+              );
+      case OpUiState.cancelled:
+        return (
+          text: 'رفضها الخادم وأُلغيت بقرارك. العملية محفوظة في السجل.',
+          color: AppColors.textSecondary,
+        );
+      case OpUiState.superseded:
+        final next = op.replacedByDisplayId;
+        return (
+          text: next == null
+              ? 'استُبدلت بعملية جديدة. هذه العملية محفوظة في السجل.'
+              : 'استُبدلت بالعملية $next. هذه العملية محفوظة في السجل.',
+          color: AppColors.textSecondary,
+        );
+      case OpUiState.syncing:
+      case OpUiState.pending:
+        final from = op.replacesDisplayId;
+        return from == null
+            ? null
+            : (
+                text: 'بديلة للعملية $from بعد مراجعة التعارض.',
+                color: AppColors.textSecondary,
+              );
+    }
   }
 }
